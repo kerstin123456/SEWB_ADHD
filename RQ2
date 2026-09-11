@@ -1,0 +1,806 @@
+# ============================================================
+# RQ2: LATENT PROFILE ANALYSIS
+# ADHD symptoms + 10 SEWB dimensions
+#
+# This script reproduces:
+#   1. Standardization of the 12 LPA indicators
+#   2. Candidate profile solutions
+#   3. Robustness comparison with mclust
+#   4. Explicit refit of the retained 4-profile VVI solution
+#   5. Profile sizes and standardized means
+#   6. Posterior classification quality
+#   7. ADHD-indicated status within profiles
+#   8. Figure 2: standardized profile means
+#
+# Prerequisite:
+#   dat_final must already have been created by the data
+#   preparation script.
+# ============================================================
+
+
+# ============================================================
+# 0. PACKAGES
+# ============================================================
+
+library(tidyverse)
+library(tidyLPA)
+library(mclust)
+
+
+# ============================================================
+# 1. PROFILE INDICATORS
+# ============================================================
+
+lpa_vars <- c(
+  "ASRS_Inattention",
+  "ASRS_Hyperactivity",
+  "SEWB_E",
+  "SEWB_QZ",
+  "SEWB_PR",
+  "SEWB_SU",
+  "SEWB_AF",
+  "SEWB_IE",
+  "SEWB_QD",
+  "SEWB_VO",
+  "SEWB_AU",
+  "SEWB_PA"
+)
+
+
+indicator_labels <- c(
+  ASRS_Inattention_z   = "Inattention",
+  ASRS_Hyperactivity_z = "Hyperactivity/impulsivity",
+  SEWB_E_z             = "Recovery sacrifice",
+  SEWB_QZ_z            = "Quality reduction",
+  SEWB_PR_z            = "Presenteeism",
+  SEWB_SU_z            = "Substance use",
+  SEWB_AF_z            = "Leisure-time work/availability",
+  SEWB_IE_z            = "Work intensification",
+  SEWB_QD_z            = "Quality deficits",
+  SEWB_VO_z            = "Concealment",
+  SEWB_AU_z            = "Reduced exchange",
+  SEWB_PA_z            = "Skipping breaks"
+)
+
+
+# ============================================================
+# 2. BASIC DATA CHECKS
+# ============================================================
+
+required_vars <- c(
+  "ADHD_group",
+  lpa_vars
+)
+
+
+missing_vars <- setdiff(
+  required_vars,
+  names(dat_final)
+)
+
+
+if (length(missing_vars) > 0) {
+  stop(
+    "Missing required variables: ",
+    paste(missing_vars, collapse = ", ")
+  )
+}
+
+
+# Missingness by LPA indicator
+colSums(
+  is.na(
+    dat_final[, lpa_vars]
+  )
+)
+
+
+# Number of complete cases on all 12 indicators
+sum(
+  complete.cases(
+    dat_final[, lpa_vars]
+  )
+)
+
+
+# ============================================================
+# 3. STANDARDIZE LPA INDICATORS
+# ============================================================
+
+lpa_data <- dat_final %>%
+
+  dplyr::select(
+    ADHD_group,
+    dplyr::all_of(lpa_vars)
+  ) %>%
+
+  dplyr::mutate(
+    dplyr::across(
+      dplyr::all_of(lpa_vars),
+      ~ as.numeric(scale(.x)),
+      .names = "{.col}_z"
+    )
+  )
+
+
+lpa_z_vars <- paste0(
+  lpa_vars,
+  "_z"
+)
+
+
+lpa_input <- lpa_data %>%
+  dplyr::select(
+    dplyr::all_of(lpa_z_vars)
+  )
+
+
+# Verify standardization
+standardization_check <- lpa_input %>%
+  dplyr::summarise(
+    dplyr::across(
+      dplyr::everything(),
+      list(
+        M = ~ mean(.x, na.rm = TRUE),
+        SD = ~ sd(.x, na.rm = TRUE)
+      )
+    )
+  )
+
+
+standardization_check
+
+
+# ============================================================
+# 4. INITIAL TIDYLPA SOLUTIONS
+#    EQUAL VARIANCES, ZERO COVARIANCES
+# ============================================================
+
+set.seed(20260818)
+
+lpa_equal <- lpa_input %>%
+  tidyLPA::estimate_profiles(
+    1:6,
+    variances = "equal",
+    covariances = "zero"
+  )
+
+
+# Profile sizes for candidate solutions
+profile_sizes_equal <- purrr::map_dfr(
+  lpa_equal,
+  function(model) {
+
+    tidyLPA::get_data(model) %>%
+
+      dplyr::count(Class) %>%
+
+      dplyr::mutate(
+        Percent =
+          100 * n / sum(n)
+      )
+  },
+  .id = "Solution"
+)
+
+
+profile_sizes_equal
+
+
+# ============================================================
+# 5. ALTERNATIVE TIDYLPA SOLUTIONS
+#    VARYING VARIANCES, ZERO COVARIANCES
+#
+# Note:
+# get_fit() is intentionally not used here because it produced
+# package-version-specific errors in the analysis environment.
+# ============================================================
+
+set.seed(20260818)
+
+lpa_varying <- lpa_input %>%
+  tidyLPA::estimate_profiles(
+    1:6,
+    variances = "varying",
+    covariances = "zero"
+  )
+
+
+# Candidate profile sizes
+profile_sizes_varying <- purrr::map_dfr(
+  lpa_varying,
+  function(model) {
+
+    tidyLPA::get_data(model) %>%
+
+      dplyr::count(Class) %>%
+
+      dplyr::mutate(
+        Percent =
+          100 * n / sum(n)
+      )
+  },
+  .id = "Solution"
+)
+
+
+profile_sizes_varying
+
+
+# ============================================================
+# 6. MCLUST MODEL COMPARISON
+#
+# EEI = equal diagonal variances
+# VVI = profile-specific diagonal variances
+# ============================================================
+
+x_lpa <- as.matrix(
+  lpa_input
+)
+
+
+set.seed(20260818)
+
+mclust_compare <- mclust::Mclust(
+  x_lpa,
+  G = 1:6,
+  modelNames = c(
+    "EEI",
+    "VVI"
+  )
+)
+
+
+summary(
+  mclust_compare
+)
+
+
+# Full BIC matrix
+mclust_compare$BIC
+
+
+# Automatically selected model in the comparison
+mclust_compare$modelName
+mclust_compare$G
+
+
+# ============================================================
+# 7. EXPLICITLY REFIT THE RETAINED 4-PROFILE VVI SOLUTION
+# ============================================================
+
+set.seed(20260818)
+
+mclust_fit <- mclust::Mclust(
+  x_lpa,
+  G = 4,
+  modelNames = "VVI"
+)
+
+
+summary(
+  mclust_fit
+)
+
+
+# Confirm retained model
+mclust_fit$modelName
+mclust_fit$G
+mclust_fit$bic
+
+
+# Overall classification uncertainty
+mean(
+  mclust_fit$uncertainty
+)
+
+
+# ============================================================
+# 8. SAVE PROFILE CLASSIFICATION
+# ============================================================
+
+dat_final$LPA_profile <- factor(
+  mclust_fit$classification,
+  levels = c(
+    1,
+    2,
+    3,
+    4
+  )
+)
+
+
+# Profile sizes
+profile_size_table <- tibble::tibble(
+  Class = names(
+    table(dat_final$LPA_profile)
+  ),
+  N = as.integer(
+    table(dat_final$LPA_profile)
+  )
+) %>%
+
+  dplyr::mutate(
+    Percent =
+      100 * N / sum(N)
+  )
+
+
+profile_size_table
+
+
+# ============================================================
+# 9. PROFILE MEANS AND STANDARD DEVIATIONS
+# ============================================================
+
+profile_data <- as.data.frame(
+  x_lpa
+) %>%
+
+  dplyr::mutate(
+    Class = factor(
+      mclust_fit$classification,
+      levels = c(
+        1,
+        2,
+        3,
+        4
+      )
+    )
+  )
+
+
+profile_means <- profile_data %>%
+
+  dplyr::group_by(
+    Class
+  ) %>%
+
+  dplyr::summarise(
+    dplyr::across(
+      dplyr::all_of(lpa_z_vars),
+      ~ mean(.x, na.rm = TRUE)
+    ),
+    .groups = "drop"
+  )
+
+
+profile_sds <- profile_data %>%
+
+  dplyr::group_by(
+    Class
+  ) %>%
+
+  dplyr::summarise(
+    dplyr::across(
+      dplyr::all_of(lpa_z_vars),
+      ~ sd(.x, na.rm = TRUE)
+    ),
+    .groups = "drop"
+  )
+
+
+profile_means
+profile_sds
+
+
+# ============================================================
+# 10. POSTERIOR CLASSIFICATION QUALITY
+# ============================================================
+
+posterior <- as.data.frame(
+  mclust_fit$z
+) %>%
+
+  dplyr::mutate(
+    Assigned_Class =
+      mclust_fit$classification,
+
+    Max_Probability =
+      apply(
+        mclust_fit$z,
+        1,
+        max
+      )
+  )
+
+
+posterior_quality <- posterior %>%
+
+  dplyr::group_by(
+    Assigned_Class
+  ) %>%
+
+  dplyr::summarise(
+    N = dplyr::n(),
+
+    Mean_posterior =
+      mean(Max_Probability),
+
+    Median_posterior =
+      median(Max_Probability),
+
+    Min_posterior =
+      min(Max_Probability),
+
+    Percent_above_80 =
+      100 * mean(
+        Max_Probability >= .80
+      ),
+
+    Percent_above_90 =
+      100 * mean(
+        Max_Probability >= .90
+      ),
+
+    .groups = "drop"
+  )
+
+
+posterior_quality
+
+
+# Overall mean classification uncertainty
+overall_uncertainty <- mean(
+  mclust_fit$uncertainty
+)
+
+overall_uncertainty
+
+
+# ============================================================
+# 11. ADHD-INDICATED STATUS WITHIN PROFILES
+#
+# ADHD_group was NOT used as an LPA indicator.
+# This is an external descriptive comparison.
+# ============================================================
+
+profile_adhd_table <- table(
+  Profile =
+    dat_final$LPA_profile,
+
+  ADHD_indicated =
+    dat_final$ADHD_group
+)
+
+
+profile_adhd_table
+
+
+profile_adhd_percent <- round(
+  prop.table(
+    profile_adhd_table,
+    margin = 1
+  ) * 100,
+  1
+)
+
+
+profile_adhd_percent
+
+
+# ============================================================
+# 12. PROFILE LABELS
+# ============================================================
+
+profile_labels <- c(
+  "1" =
+    "P1 Elevated symptoms / broad SEWB",
+
+  "2" =
+    "P2 Quality-compromising",
+
+  "3" =
+    "P3 Low symptoms / low SEWB",
+
+  "4" =
+    "P4 Average symptoms / relatively low SEWB"
+)
+
+
+dat_final <- dat_final %>%
+  dplyr::mutate(
+    Profile = factor(
+      LPA_profile,
+      levels = c(
+        "1",
+        "2",
+        "3",
+        "4"
+      ),
+      labels =
+        unname(
+          profile_labels
+        )
+    )
+  )
+
+
+# ============================================================
+# 13. FIGURE 2
+# STANDARDIZED LPA INDICATOR MEANS
+# ============================================================
+
+indicator_labels_plot <- c(
+  ASRS_Inattention_z =
+    "Inattention",
+
+  ASRS_Hyperactivity_z =
+    "Hyperactivity /\nimpulsivity",
+
+  SEWB_E_z =
+    "Recovery\nsacrifice",
+
+  SEWB_QZ_z =
+    "Quality\nreduction",
+
+  SEWB_PR_z =
+    "Presenteeism",
+
+  SEWB_SU_z =
+    "Substance\nuse",
+
+  SEWB_AF_z =
+    "Leisure-time\nwork",
+
+  SEWB_IE_z =
+    "Work\nintensification",
+
+  SEWB_QD_z =
+    "Quality\ndeficits",
+
+  SEWB_VO_z =
+    "Concealment",
+
+  SEWB_AU_z =
+    "Reduced\nexchange",
+
+  SEWB_PA_z =
+    "Skipping\nbreaks"
+)
+
+
+profile_labels_n <- c(
+  "1" =
+    "P1 Elevated symptoms / broad SEWB (n = 134)",
+
+  "2" =
+    "P2 Quality-compromising (n = 23)",
+
+  "3" =
+    "P3 Low symptoms / low SEWB (n = 103)",
+
+  "4" =
+    "P4 Average symptoms / relatively low SEWB (n = 211)"
+)
+
+
+figure2_data <- profile_means %>%
+
+  dplyr::mutate(
+    Profile =
+      profile_labels_n[
+        as.character(Class)
+      ]
+  ) %>%
+
+  dplyr::select(
+    -Class
+  ) %>%
+
+  tidyr::pivot_longer(
+    cols = -Profile,
+    names_to = "Indicator",
+    values_to = "Z_mean"
+  ) %>%
+
+  dplyr::mutate(
+
+    Indicator = factor(
+      Indicator,
+      levels =
+        names(
+          indicator_labels_plot
+        ),
+      labels =
+        unname(
+          indicator_labels_plot
+        )
+    ),
+
+    Profile = factor(
+      Profile,
+      levels =
+        unname(
+          profile_labels_n
+        )
+    ),
+
+    Indicator_num =
+      as.numeric(
+        Indicator
+      )
+  )
+
+
+figure2 <- ggplot(
+  figure2_data,
+  aes(
+    x = Indicator_num,
+    y = Z_mean,
+    group = Profile,
+    linetype = Profile
+  )
+) +
+
+  geom_hline(
+    yintercept = 0,
+    linewidth = 0.5
+  ) +
+
+  geom_hline(
+    yintercept = c(
+      -1,
+      1
+    ),
+    linetype = "dotted",
+    linewidth = 0.4
+  ) +
+
+  # Separates ADHD indicators from SEWB indicators
+  geom_vline(
+    xintercept = 2.5,
+    linetype = "dashed",
+    linewidth = 0.5
+  ) +
+
+  geom_line(
+    linewidth = 1
+  ) +
+
+  geom_point(
+    size = 2.4
+  ) +
+
+  scale_x_continuous(
+    breaks = 1:12,
+    labels =
+      levels(
+        figure2_data$Indicator
+      ),
+    expand =
+      expansion(
+        mult = c(
+          .02,
+          .02
+        )
+      )
+  ) +
+
+  scale_y_continuous(
+    breaks =
+      seq(
+        -1.5,
+        2,
+        .5
+      ),
+    limits = c(
+      -1.25,
+      2.05
+    )
+  ) +
+
+  labs(
+    x = NULL,
+    y = "Standardized profile mean (z)",
+    linetype = NULL
+  ) +
+
+  theme_classic(
+    base_size = 12
+  ) +
+
+  theme(
+    axis.text.x =
+      element_text(
+        angle = 45,
+        hjust = 1,
+        vjust = 1
+      ),
+
+    legend.position =
+      "bottom"
+  )
+
+
+figure2
+
+
+# ============================================================
+# 14. SAVE OUTPUTS
+# ============================================================
+
+dir.create(
+  "results",
+  showWarnings = FALSE
+)
+
+dir.create(
+  "figures",
+  showWarnings = FALSE
+)
+
+
+# Numeric results
+readr::write_csv(
+  profile_size_table,
+  "results/RQ2_profile_sizes.csv"
+)
+
+
+readr::write_csv(
+  profile_means,
+  "results/RQ2_profile_means.csv"
+)
+
+
+readr::write_csv(
+  profile_sds,
+  "results/RQ2_profile_sds.csv"
+)
+
+
+readr::write_csv(
+  posterior_quality,
+  "results/RQ2_posterior_quality.csv"
+)
+
+
+readr::write_csv(
+  standardization_check,
+  "results/RQ2_standardization_check.csv"
+)
+
+
+write.csv(
+  profile_adhd_table,
+  "results/RQ2_ADHD_group_counts_by_profile.csv",
+  row.names = TRUE
+)
+
+
+write.csv(
+  profile_adhd_percent,
+  "results/RQ2_ADHD_group_percent_by_profile.csv",
+  row.names = TRUE
+)
+
+
+# Figure 2
+ggsave(
+  filename =
+    "figures/Figure2_LPA_profiles.png",
+  plot = figure2,
+  width = 10,
+  height = 6,
+  units = "in",
+  dpi = 400,
+  bg = "white"
+)
+
+
+ggsave(
+  filename =
+    "figures/Figure2_LPA_profiles.pdf",
+  plot = figure2,
+  width = 10,
+  height = 6,
+  units = "in"
+)
+
+
+# ============================================================
+# 15. REPRODUCIBILITY INFORMATION
+# ============================================================
+
+sessionInfo()
