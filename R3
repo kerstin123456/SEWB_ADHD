@@ -1,0 +1,538 @@
+# ============================================================
+# RQ3: BURNOUT, WORK ENGAGEMENT, AND PERCEIVED STRESS
+#      ACROSS ADHD-SEWB LATENT PROFILES
+#
+# Outcomes:
+#   MBI_EE  = Emotional exhaustion
+#   MBI_DP  = Depersonalization
+#   MBI_RPA = Reduced personal accomplishment
+#   UWES    = Work engagement
+#   PSS     = Perceived stress
+#
+# Predictor:
+#   4-class ADHD-SEWB latent profile
+#
+# Covariates:
+#   age_c
+#   sex_male
+#   sex_diverse
+#
+# Inference:
+#   HC3 heteroskedasticity-robust covariance estimates
+#   Type II omnibus tests
+#   Estimated marginal means
+#   Tukey-adjusted pairwise profile comparisons
+#
+# Prerequisite:
+#   dat_final must already contain LPA_profile and all outcomes
+# ============================================================
+
+
+# ============================================================
+# 0. PACKAGES
+# ============================================================
+
+library(tidyverse)
+library(car)
+library(sandwich)
+library(emmeans)
+
+
+# ============================================================
+# 1. PROFILE LABELS
+# ============================================================
+
+dat_final <- dat_final %>%
+  dplyr::mutate(
+    Profile = factor(
+      LPA_profile,
+      levels = c("1", "2", "3", "4"),
+      labels = c(
+        "P1 Elevated symptoms / broad SEWB",
+        "P2 Quality-compromising",
+        "P3 Low symptoms / low SEWB",
+        "P4 Average symptoms / relatively low SEWB"
+      )
+    )
+  )
+
+
+# Check profile sizes
+table(dat_final$Profile)
+
+
+# ============================================================
+# 2. OUTCOME DEFINITIONS
+# ============================================================
+
+outcome_vars <- c(
+  "MBI_EE",
+  "MBI_DP",
+  "MBI_RPA",
+  "UWES",
+  "PSS"
+)
+
+
+outcome_labels <- c(
+  MBI_EE  = "Emotional exhaustion",
+  MBI_DP  = "Depersonalization",
+  MBI_RPA = "Reduced personal accomplishment",
+  UWES    = "Work engagement",
+  PSS     = "Perceived stress"
+)
+
+
+# ============================================================
+# 3. BASIC DATA CHECKS
+# ============================================================
+
+required_vars <- c(
+  "LPA_profile",
+  "Profile",
+  "age_c",
+  "sex_male",
+  "sex_diverse",
+  outcome_vars
+)
+
+
+missing_vars <- setdiff(
+  required_vars,
+  names(dat_final)
+)
+
+
+if (length(missing_vars) > 0) {
+  stop(
+    "Missing required variables: ",
+    paste(missing_vars, collapse = ", ")
+  )
+}
+
+
+# ============================================================
+# 4. HELPER FUNCTION:
+#    FIT ONE OUTCOME MODEL
+# ============================================================
+
+fit_rq3_outcome <- function(outcome) {
+
+  formula <- stats::as.formula(
+    paste0(
+      outcome,
+      " ~ Profile + age_c + sex_male + sex_diverse"
+    )
+  )
+
+  model <- stats::lm(
+    formula,
+    data = dat_final
+  )
+
+  robust_vcov <- sandwich::vcovHC(
+    model,
+    type = "HC3"
+  )
+
+  omnibus <- car::Anova(
+    model,
+    type = 2,
+    vcov. = robust_vcov,
+    test.statistic = "F"
+  )
+
+  emm <- emmeans::emmeans(
+    model,
+    ~ Profile,
+    vcov. = robust_vcov
+  )
+
+  pairwise <- emmeans::pairs(
+    emm,
+    adjust = "tukey"
+  )
+
+  list(
+    model = model,
+    vcov = robust_vcov,
+    omnibus = omnibus,
+    emmeans = emm,
+    pairwise = pairwise
+  )
+}
+
+
+# ============================================================
+# 5. FIT ALL FIVE OUTCOME MODELS
+# ============================================================
+
+rq3_models <- purrr::set_names(
+  purrr::map(
+    outcome_vars,
+    fit_rq3_outcome
+  ),
+  outcome_vars
+)
+
+
+# ============================================================
+# 6. DISPLAY OMNIBUS TESTS
+# ============================================================
+
+rq3_models$MBI_EE$omnibus
+rq3_models$MBI_DP$omnibus
+rq3_models$MBI_RPA$omnibus
+rq3_models$UWES$omnibus
+rq3_models$PSS$omnibus
+
+
+# ============================================================
+# 7. EXTRACT OMNIBUS PROFILE EFFECTS
+# ============================================================
+
+rq3_omnibus <- purrr::map_dfr(
+  outcome_vars,
+  function(outcome) {
+
+    tab <- rq3_models[[outcome]]$omnibus
+
+    profile_row <- tab[
+      rownames(tab) == "Profile",
+      ,
+      drop = FALSE
+    ]
+
+    tibble::tibble(
+      Outcome = outcome,
+      Outcome_label = unname(outcome_labels[outcome]),
+      F = profile_row$F,
+      df1 = profile_row$Df,
+      df2 = stats::df.residual(
+        rq3_models[[outcome]]$model
+      ),
+      p = profile_row$`Pr(>F)`
+    )
+  }
+)
+
+
+rq3_omnibus
+
+
+# ============================================================
+# 8. ADJUSTED PROFILE MEANS
+# ============================================================
+
+rq3_emmeans <- purrr::map_dfr(
+  outcome_vars,
+  function(outcome) {
+
+    as.data.frame(
+      rq3_models[[outcome]]$emmeans
+    ) %>%
+
+      dplyr::mutate(
+        Outcome = outcome,
+        Outcome_label =
+          unname(
+            outcome_labels[outcome]
+          )
+      ) %>%
+
+      dplyr::select(
+        Outcome,
+        Outcome_label,
+        Profile,
+        emmean,
+        SE,
+        df,
+        lower.CL,
+        upper.CL
+      )
+  }
+)
+
+
+rq3_emmeans
+
+
+# ============================================================
+# 9. TUKEY-ADJUSTED PAIRWISE COMPARISONS
+# ============================================================
+
+rq3_pairwise <- purrr::map_dfr(
+  outcome_vars,
+  function(outcome) {
+
+    as.data.frame(
+      summary(
+        rq3_models[[outcome]]$pairwise,
+        infer = TRUE
+      )
+    ) %>%
+
+      dplyr::mutate(
+        Outcome = outcome,
+        Outcome_label =
+          unname(
+            outcome_labels[outcome]
+          )
+      ) %>%
+
+      dplyr::select(
+        Outcome,
+        Outcome_label,
+        contrast,
+        estimate,
+        SE,
+        df,
+        lower.CL,
+        upper.CL,
+        t.ratio,
+        p.value
+      )
+  }
+)
+
+
+rq3_pairwise
+
+
+# ============================================================
+# 10. SHORT PROFILE LABELS FOR FIGURES
+# ============================================================
+
+rq3_emmeans <- rq3_emmeans %>%
+  dplyr::mutate(
+
+    Profile_short = dplyr::case_when(
+      grepl("^P1", as.character(Profile)) ~ "P1",
+      grepl("^P2", as.character(Profile)) ~ "P2",
+      grepl("^P3", as.character(Profile)) ~ "P3",
+      grepl("^P4", as.character(Profile)) ~ "P4",
+      TRUE ~ NA_character_
+    ),
+
+    Profile_short = factor(
+      Profile_short,
+      levels = c(
+        "P1",
+        "P2",
+        "P3",
+        "P4"
+      )
+    )
+  )
+
+
+# ============================================================
+# 11. TABLE 3 DATA
+# ============================================================
+
+table3_means <- rq3_emmeans %>%
+  dplyr::transmute(
+    Outcome = Outcome_label,
+    Profile = Profile_short,
+    Mean = emmean,
+    SE = SE,
+    CI_low = lower.CL,
+    CI_high = upper.CL
+  )
+
+
+table3_means
+
+
+# ============================================================
+# 12. OPTIONAL:
+#     SIGNIFICANT PAIRWISE DIFFERENCES ONLY
+# ============================================================
+
+rq3_pairwise_significant <- rq3_pairwise %>%
+  dplyr::filter(
+    p.value < .05
+  ) %>%
+  dplyr::arrange(
+    Outcome,
+    p.value
+  )
+
+
+rq3_pairwise_significant
+
+
+# ============================================================
+# 13. FIGURE 4 DATA:
+#     WORK ENGAGEMENT + PERCEIVED STRESS
+# ============================================================
+
+figure4_data <- rq3_emmeans %>%
+  dplyr::filter(
+    Outcome %in% c(
+      "UWES",
+      "PSS"
+    )
+  ) %>%
+
+  dplyr::mutate(
+    Outcome_plot = dplyr::case_when(
+      Outcome == "UWES" ~ "Work engagement",
+      Outcome == "PSS" ~ "Perceived stress"
+    ),
+
+    Outcome_plot = factor(
+      Outcome_plot,
+      levels = c(
+        "Work engagement",
+        "Perceived stress"
+      )
+    )
+  )
+
+
+# ============================================================
+# 14. FIGURE 4
+#     NO CONNECTING LINES
+# ============================================================
+
+figure4 <- ggplot(
+  figure4_data,
+  aes(
+    x = Profile_short,
+    y = emmean
+  )
+) +
+
+  geom_errorbar(
+    aes(
+      ymin = lower.CL,
+      ymax = upper.CL
+    ),
+    width = 0.10,
+    linewidth = 0.7
+  ) +
+
+  geom_point(
+    size = 3.5
+  ) +
+
+  geom_text(
+    aes(
+      label = sprintf(
+        "%.2f",
+        emmean
+      )
+    ),
+    vjust = -1.25,
+    size = 3.5
+  ) +
+
+  facet_wrap(
+    ~ Outcome_plot,
+    nrow = 1,
+    scales = "free_y"
+  ) +
+
+  labs(
+    x = "ADHD-SEWB latent profile",
+    y = "Adjusted mean"
+  ) +
+
+  theme_classic(
+    base_size = 12
+  ) +
+
+  theme(
+    strip.text = element_text(
+      face = "bold",
+      size = 12
+    ),
+
+    axis.text.x = element_text(
+      face = "bold",
+      size = 11
+    ),
+
+    panel.spacing =
+      grid::unit(
+        1.5,
+        "cm"
+      )
+  )
+
+
+figure4
+
+
+# ============================================================
+# 15. SAVE FIGURE 4
+# ============================================================
+
+dir.create(
+  "figures",
+  showWarnings = FALSE
+)
+
+
+ggsave(
+  filename =
+    "figures/Figure4_WorkEngagement_PerceivedStress.png",
+  plot = figure4,
+  width = 9,
+  height = 4.5,
+  units = "in",
+  dpi = 400,
+  bg = "white"
+)
+
+
+ggsave(
+  filename =
+    "figures/Figure4_WorkEngagement_PerceivedStress.pdf",
+  plot = figure4,
+  width = 9,
+  height = 4.5,
+  units = "in"
+)
+
+
+# ============================================================
+# 16. SAVE NUMERIC RESULTS
+# ============================================================
+
+dir.create(
+  "results",
+  showWarnings = FALSE
+)
+
+
+readr::write_csv(
+  rq3_omnibus,
+  "results/RQ3_omnibus_profile_tests.csv"
+)
+
+
+readr::write_csv(
+  rq3_emmeans,
+  "results/RQ3_adjusted_profile_means.csv"
+)
+
+
+readr::write_csv(
+  rq3_pairwise,
+  "results/RQ3_pairwise_Tukey.csv"
+)
+
+
+readr::write_csv(
+  rq3_pairwise_significant,
+  "results/RQ3_pairwise_significant.csv"
+)
+
+
+# ============================================================
+# 17. REPRODUCIBILITY INFORMATION
+# ============================================================
+
+sessionInfo()
