@@ -1,0 +1,477 @@
+# ============================================================
+# RQ1: ADHD GROUP, SELF-ENDANGERING WORK BEHAVIOR,
+#      AND BURNOUT, WORK ENGAGEMENT, AND PERCEIVED STRESS
+#
+# This script reproduces:
+#   1. ADHD-group differences in the 10 SEWB dimensions
+#   2. Multicollinearity diagnostics
+#   3. Main observed-variable path model
+#   4. Exploratory ADHD group x SEWB moderation analyses
+#
+# Prerequisite:
+#   `dat_final` must already have been created by the data
+#   preparation script.
+#
+# Required variables in dat_final:
+#   ADHD_group
+#   age_c
+#   sex_male
+#   sex_diverse
+#   SEWB_E, SEWB_QZ, SEWB_PR, SEWB_SU, SEWB_AF,
+#   SEWB_IE, SEWB_QD, SEWB_VO, SEWB_AU, SEWB_PA
+#   MBI_EE, MBI_DP, MBI_RPA, UWES, PSS
+# ============================================================
+
+
+# ============================================================
+# 0. PACKAGES
+# ============================================================
+
+library(tidyverse)
+library(lavaan)
+library(car)
+library(broom)
+library(sandwich)
+
+
+# ============================================================
+# 1. VARIABLE DEFINITIONS
+# ============================================================
+
+sewb_vars <- c(
+  "SEWB_E",   # Recovery sacrifice
+  "SEWB_QZ",  # Quality reduction
+  "SEWB_PR",  # Presenteeism
+  "SEWB_SU",  # Performance-enhancing substance use
+  "SEWB_AF",  # Work during leisure time / availability
+  "SEWB_IE",  # Work intensification
+  "SEWB_QD",  # Quality deficits
+  "SEWB_VO",  # Concealment of performance problems
+  "SEWB_AU",  # Reduced exchange with colleagues
+  "SEWB_PA"   # Skipping breaks
+)
+
+
+sewb_labels <- c(
+  SEWB_E  = "Recovery sacrifice",
+  SEWB_QZ = "Quality reduction",
+  SEWB_PR = "Presenteeism",
+  SEWB_SU = "Performance-enhancing substance use",
+  SEWB_AF = "Work during leisure time / availability",
+  SEWB_IE = "Work intensification",
+  SEWB_QD = "Quality deficits",
+  SEWB_VO = "Concealment of performance problems",
+  SEWB_AU = "Reduced exchange with colleagues",
+  SEWB_PA = "Skipping breaks"
+)
+
+
+outcome_vars <- c(
+  "MBI_EE",
+  "MBI_DP",
+  "MBI_RPA",
+  "UWES",
+  "PSS"
+)
+
+
+outcome_labels <- c(
+  MBI_EE  = "Emotional exhaustion",
+  MBI_DP  = "Depersonalization",
+  MBI_RPA = "Reduced personal accomplishment",
+  UWES    = "Work engagement",
+  PSS     = "Perceived stress"
+)
+
+
+# ============================================================
+# 2. BASIC DATA CHECKS
+# ============================================================
+
+required_vars <- c(
+  "ADHD_group",
+  "age_c",
+  "sex_male",
+  "sex_diverse",
+  sewb_vars,
+  outcome_vars
+)
+
+
+missing_vars <- setdiff(
+  required_vars,
+  names(dat_final)
+)
+
+
+if (length(missing_vars) > 0) {
+  stop(
+    "The following required variables are missing from dat_final: ",
+    paste(missing_vars, collapse = ", ")
+  )
+}
+
+
+# ADHD_group should be coded 0/1
+if (!all(
+  na.omit(unique(dat_final$ADHD_group)) %in% c(0, 1)
+)) {
+  stop("ADHD_group must be coded 0 = comparison, 1 = ADHD group.")
+}
+
+
+# ============================================================
+# 3. ADHD GROUP DIFFERENCES IN SEWB
+# ============================================================
+
+# ------------------------------------------------------------
+# Cohen's d
+#
+# Positive d = higher scores in ADHD group
+# ------------------------------------------------------------
+
+cohen_d <- function(x, group) {
+
+  keep <- complete.cases(x, group)
+
+  x <- x[keep]
+  group <- group[keep]
+
+  x0 <- x[group == 0]
+  x1 <- x[group == 1]
+
+  pooled_sd <- sqrt(
+    (
+      (length(x0) - 1) * stats::var(x0) +
+      (length(x1) - 1) * stats::var(x1)
+    ) /
+      (
+        length(x0) +
+        length(x1) -
+        2
+      )
+  )
+
+  (
+    mean(x1) -
+      mean(x0)
+  ) / pooled_sd
+}
+
+
+# ------------------------------------------------------------
+# Welch independent-samples t tests
+# ------------------------------------------------------------
+
+sewb_group_results <- purrr::map_dfr(
+  sewb_vars,
+  function(v) {
+
+    x <- dat_final[[v]]
+    g <- dat_final$ADHD_group
+
+    test <- stats::t.test(
+      x ~ g
+    )
+
+    tibble::tibble(
+      Variable = v,
+      Dimension = unname(sewb_labels[v]),
+
+      M_comparison =
+        mean(x[g == 0], na.rm = TRUE),
+
+      SD_comparison =
+        stats::sd(x[g == 0], na.rm = TRUE),
+
+      M_ADHD =
+        mean(x[g == 1], na.rm = TRUE),
+
+      SD_ADHD =
+        stats::sd(x[g == 1], na.rm = TRUE),
+
+      t =
+        unname(test$statistic),
+
+      df =
+        unname(test$parameter),
+
+      p =
+        test$p.value,
+
+      Cohen_d =
+        cohen_d(x, g)
+    )
+  }
+) %>%
+
+  dplyr::mutate(
+    p_Holm =
+      stats::p.adjust(
+        p,
+        method = "holm"
+      )
+  )
+
+
+sewb_group_results
+
+
+# ============================================================
+# 4. MULTICOLLINEARITY DIAGNOSTICS
+# ============================================================
+
+# ------------------------------------------------------------
+# Correlations among the 10 SEWB dimensions
+# ------------------------------------------------------------
+
+sewb_cor <- stats::cor(
+  dat_final[, sewb_vars],
+  use = "pairwise.complete.obs"
+)
+
+round(
+  sewb_cor,
+  2
+)
+
+
+# ------------------------------------------------------------
+# Variance inflation factors
+#
+# Outcome is incidental here; VIFs depend on the predictor
+# matrix.
+# ------------------------------------------------------------
+
+vif_formula <- stats::as.formula(
+  paste(
+    "MBI_EE ~",
+    paste(
+      sewb_vars,
+      collapse = " + "
+    )
+  )
+)
+
+
+vif_model <- stats::lm(
+  vif_formula,
+  data = dat_final
+)
+
+
+sewb_vif <- car::vif(
+  vif_model
+)
+
+sewb_vif
+
+
+# ============================================================
+# 5. MAIN RQ1 PATH MODEL
+#
+# ADHD group + covariates -> SEWB
+#
+# ADHD group + SEWB + covariates ->
+#   emotional exhaustion
+#   depersonalization
+#   reduced personal accomplishment
+#   work engagement
+#   perceived stress
+#
+# MLR estimator + FIML
+# ============================================================
+
+rq1_model <- '
+
+# ------------------------------------------------------------
+# ADHD group and covariates -> SEWB
+# ------------------------------------------------------------
+
+SEWB_E  ~ ADHD_group + age_c + sex_male + sex_diverse
+SEWB_QZ ~ ADHD_group + age_c + sex_male + sex_diverse
+SEWB_PR ~ ADHD_group + age_c + sex_male + sex_diverse
+SEWB_SU ~ ADHD_group + age_c + sex_male + sex_diverse
+SEWB_AF ~ ADHD_group + age_c + sex_male + sex_diverse
+SEWB_IE ~ ADHD_group + age_c + sex_male + sex_diverse
+SEWB_QD ~ ADHD_group + age_c + sex_male + sex_diverse
+SEWB_VO ~ ADHD_group + age_c + sex_male + sex_diverse
+SEWB_AU ~ ADHD_group + age_c + sex_male + sex_diverse
+SEWB_PA ~ ADHD_group + age_c + sex_male + sex_diverse
+
+
+# ------------------------------------------------------------
+# Predictors of burnout, engagement, and perceived stress
+# ------------------------------------------------------------
+
+MBI_EE ~
+  ADHD_group + age_c + sex_male + sex_diverse +
+  SEWB_E + SEWB_QZ + SEWB_PR + SEWB_SU + SEWB_AF +
+  SEWB_IE + SEWB_QD + SEWB_VO + SEWB_AU + SEWB_PA
+
+MBI_DP ~
+  ADHD_group + age_c + sex_male + sex_diverse +
+  SEWB_E + SEWB_QZ + SEWB_PR + SEWB_SU + SEWB_AF +
+  SEWB_IE + SEWB_QD + SEWB_VO + SEWB_AU + SEWB_PA
+
+MBI_RPA ~
+  ADHD_group + age_c + sex_male + sex_diverse +
+  SEWB_E + SEWB_QZ + SEWB_PR + SEWB_SU + SEWB_AF +
+  SEWB_IE + SEWB_QD + SEWB_VO + SEWB_AU + SEWB_PA
+
+UWES ~
+  ADHD_group + age_c + sex_male + sex_diverse +
+  SEWB_E + SEWB_QZ + SEWB_PR + SEWB_SU + SEWB_AF +
+  SEWB_IE + SEWB_QD + SEWB_VO + SEWB_AU + SEWB_PA
+
+PSS ~
+  ADHD_group + age_c + sex_male + sex_diverse +
+  SEWB_E + SEWB_QZ + SEWB_PR + SEWB_SU + SEWB_AF +
+  SEWB_IE + SEWB_QD + SEWB_VO + SEWB_AU + SEWB_PA
+
+
+# ------------------------------------------------------------
+# Residual correlations among SEWB dimensions
+# ------------------------------------------------------------
+
+SEWB_E  ~~ SEWB_QZ + SEWB_PR + SEWB_SU + SEWB_AF + SEWB_IE +
+           SEWB_QD + SEWB_VO + SEWB_AU + SEWB_PA
+
+SEWB_QZ ~~ SEWB_PR + SEWB_SU + SEWB_AF + SEWB_IE +
+           SEWB_QD + SEWB_VO + SEWB_AU + SEWB_PA
+
+SEWB_PR ~~ SEWB_SU + SEWB_AF + SEWB_IE +
+           SEWB_QD + SEWB_VO + SEWB_AU + SEWB_PA
+
+SEWB_SU ~~ SEWB_AF + SEWB_IE + SEWB_QD +
+           SEWB_VO + SEWB_AU + SEWB_PA
+
+SEWB_AF ~~ SEWB_IE + SEWB_QD + SEWB_VO +
+           SEWB_AU + SEWB_PA
+
+SEWB_IE ~~ SEWB_QD + SEWB_VO + SEWB_AU + SEWB_PA
+SEWB_QD ~~ SEWB_VO + SEWB_AU + SEWB_PA
+SEWB_VO ~~ SEWB_AU + SEWB_PA
+SEWB_AU ~~ SEWB_PA
+
+
+# ------------------------------------------------------------
+# Residual correlations among outcomes
+# ------------------------------------------------------------
+
+MBI_EE  ~~ MBI_DP + MBI_RPA + UWES + PSS
+MBI_DP  ~~ MBI_RPA + UWES + PSS
+MBI_RPA ~~ UWES + PSS
+UWES    ~~ PSS
+'
+
+
+fit_rq1 <- lavaan::sem(
+  model = rq1_model,
+  data = dat_final,
+  estimator = "MLR",
+  missing = "fiml",
+  fixed.x = FALSE
+)
+
+
+# ============================================================
+# 6. R-SQUARED
+# ============================================================
+
+rq1_r2 <- lavaan::inspect(
+  fit_rq1,
+  "r2"
+)
+
+rq1_r2
+
+
+# ============================================================
+# 7. ALL REGRESSION PATHS
+# ============================================================
+
+rq1_paths <- lavaan::parameterEstimates(
+  fit_rq1,
+  standardized = TRUE,
+  ci = TRUE
+) %>%
+
+  dplyr::filter(
+    op == "~"
+  ) %>%
+
+  dplyr::transmute(
+    Outcome = lhs,
+    Predictor = rhs,
+    b = est,
+    SE = se,
+    z = z,
+    p = pvalue,
+    CI_low = ci.lower,
+    CI_high = ci.upper,
+    beta = std.all
+  )
+
+
+rq1_paths
+
+
+# ============================================================
+# 8. TABLE 2 DATA
+# ADHD GROUP + SEWB -> FIVE OUTCOMES
+# ============================================================
+
+main_predictors <- c(
+  "ADHD_group",
+  sewb_vars
+)
+
+
+predictor_labels <- c(
+  ADHD_group =
+    "ADHD group membership",
+  sewb_labels
+)
+
+
+rq1_table <- rq1_paths %>%
+
+  dplyr::filter(
+    Outcome %in% outcome_vars,
+    Predictor %in% main_predictors
+  ) %>%
+
+  dplyr::mutate(
+
+    Predictor_label =
+      unname(
+        predictor_labels[
+          Predictor
+        ]
+      ),
+
+    Outcome_label =
+      unname(
+        outcome_labels[
+          Outcome
+        ]
+      )
+  ) %>%
+
+  dplyr::select(
+    Outcome,
+    Outcome_label,
+    Predictor,
+    Predictor_label,
+    b,
+    SE,
+    z,
+    p,
+    CI_low,
+    CI_high,
+    beta
+  )
+
+
+rq1_table
